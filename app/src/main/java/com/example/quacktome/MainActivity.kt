@@ -21,36 +21,40 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.quacktome.ui.theme.QuackTomeTheme
-// import com.google.mediapipe.tasks.genai.llminference.LlmInference
-// import com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions
+import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MainActivity : ComponentActivity() {
-    // private lateinit var llm: LlmInference
+    private var llm: LlmInference? = null
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        /*
-        // Set the configuration options for the LLM Inference task
-        val taskOptions = LlmInferenceOptions.builder()
-            .setModelPath("/data/local/tmp/llm/gemma3-1b-it-int4.task")
-            .setMaxTopK(64)
-            .build()
+        val modelPath = "/data/local/tmp/llm/gemma3-1b-it-int4.task"
+        val modelFile = File(modelPath)
 
-        // Create an instance of the LLM Inference task
-        llm = LlmInference.createFromOptions(this, taskOptions)
-        */
+        if (modelFile.exists()) {
+            // Set the configuration options for the LLM Inference task
+            val taskOptions = LlmInferenceOptions.builder()
+                .setModelPath(modelPath)
+                .setMaxTopK(64)
+                .build()
+
+            // Create an instance of the LLM Inference task
+            llm = LlmInference.createFromOptions(this, taskOptions)
+        }
 
         setContent {
             QuackTomeTheme {
-                ChatScreen()
+                ChatScreen(llm)
             }
         }
     }
 }
 
 @Composable
-fun ChatScreen() {
+fun ChatScreen(llm: LlmInference?) {
     val messages = remember { mutableStateOf(listOf<String>()) }
     val inputText = remember { mutableStateOf("") }
     val coroutineScope = rememberCoroutineScope()
@@ -82,11 +86,14 @@ fun ChatScreen() {
                         messages.value += "You: $userText"
                         inputText.value = ""
                         coroutineScope.launch {
-                            // val result = llm.generateResponse(userText)
-                            // messages.value += "AI: $result"
+                            llm?.let {
+                                val result = it.generateResponse(userText)
+                                messages.value += "AI: $result"
+                            }
                         }
                     }
                 },
+                enabled = llm != null,
                 modifier = Modifier.padding(start = 8.dp)
             ) {
                 Text("Send")
@@ -99,7 +106,6 @@ fun ChatScreen() {
 @Composable
 fun DefaultPreview() {
     QuackTomeTheme {
-        // You can pass a mock LlmInference for preview if needed
-         ChatScreen()
+        ChatScreen(llm = null)
     }
 }
