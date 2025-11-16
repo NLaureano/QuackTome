@@ -283,6 +283,7 @@ fun AppLayout(
     var sidebarExpanded by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var isGenerating by remember { mutableStateOf(false) }
 
     var conversations by remember { mutableStateOf(dataRepository.loadConversations()) }
     var activeConversationId by remember { mutableStateOf(conversations.firstOrNull()?.id) }
@@ -322,6 +323,7 @@ fun AppLayout(
 
     fun onSendMessage(text: String) {
         val conversationId = activeConversationId ?: return
+        isGenerating = true
 
         conversations = conversations.map {
             if (it.id == conversationId) {
@@ -343,6 +345,7 @@ fun AppLayout(
                     it.copy(messages = it.messages + Message(result, isFromUser = false))
                 } else it
             }
+            isGenerating = false
         }
     }
 
@@ -350,6 +353,7 @@ fun AppLayout(
         ChatScreen(
             conversation = activeConversation,
             onSendMessage = { onSendMessage(it) },
+            isGenerating = isGenerating,
             modifier = Modifier.fillMaxSize()
         )
 
@@ -474,13 +478,43 @@ fun getCustomRichTextStyle(): RichTextStyle {
 }
 
 @Composable
+fun MessageInput(
+    onSendMessage: (String) -> Unit,
+    isGenerating: Boolean,
+    isConversationSelected: Boolean
+) {
+    var inputText by remember { mutableStateOf("") }
+
+    Row(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+        TextField(
+            value = inputText,
+            onValueChange = { inputText = it },
+            modifier = Modifier.weight(1f),
+            enabled = !isGenerating
+        )
+        Button(
+            onClick = {
+                val userText = inputText.trim()
+                if (userText.isNotEmpty()) {
+                    onSendMessage(userText)
+                    inputText = ""
+                }
+            },
+            enabled = isConversationSelected && !isGenerating,
+            modifier = Modifier.padding(start = 8.dp)
+        ) {
+            Text("Send")
+        }
+    }
+}
+
+@Composable
 fun ChatScreen(
     conversation: Conversation?,
     onSendMessage: (String) -> Unit,
+    isGenerating: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val inputText = remember { mutableStateOf("") }
-
     Column(modifier = modifier.fillMaxSize()) {
         Box(modifier = Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) {
             Text(text = "Runic Tome", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onBackground)
@@ -521,10 +555,11 @@ fun ChatScreen(
                 }
             }
         }
-        Row(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
-            TextField(value = inputText.value, onValueChange = { inputText.value = it }, modifier = Modifier.weight(1f))
-            Button(onClick = { val userText = inputText.value.trim(); if (userText.isNotEmpty()) { onSendMessage(userText); inputText.value = "" } }, enabled = conversation != null, modifier = Modifier.padding(start = 8.dp)) { Text("Send") }
-        }
+        MessageInput(
+            onSendMessage = onSendMessage,
+            isGenerating = isGenerating,
+            isConversationSelected = conversation != null
+        )
     }
 }
 
@@ -581,7 +616,7 @@ fun SettingsDialog(
     defaultModelPath: String,
     isDefaultModelDownloaded: Boolean,
     onRefreshDefaultModelStatus: () -> Unit,
-    isDownloading: Boolean
+isDownloading: Boolean
 ) {
     val customModelPath = if (modelPath.isNotEmpty() && modelPath != defaultModelPath) modelPath else ""
 
