@@ -54,8 +54,11 @@ import com.halilibo.richtext.ui.RichTextStyle
 import com.halilibo.richtext.ui.TableStyle
 import com.halilibo.richtext.ui.material3.RichText
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -63,7 +66,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 
 // --- Data Classes ---
-data class Message(val text: String, val isFromUser: Boolean)
+data class Message(val text: String, val isFromUser: Boolean, val timeToGenerate: Long? = null)
 data class Conversation(val id: Int, var name: String, val messages: List<Message>)
 
 class DataRepository(private val context: Context) {
@@ -325,8 +328,27 @@ fun AppLayout(
 
         conversations = conversations.map {
             if (it.id == conversationId) {
-                it.copy(messages = it.messages + Message(text, isFromUser = true))
+                it.copy(messages = it.messages + Message(text, isFromUser = true) + Message("Thinking...", isFromUser = false))
             } else it
+        }
+
+        val startTime = System.currentTimeMillis()
+        val timerJob = coroutineScope.launch {
+            var seconds = 0
+            while (isActive) {
+                delay(1000)
+                seconds++
+                conversations = conversations.map { conv ->
+                    if (conv.id == conversationId) {
+                        val lastMessage = conv.messages.lastOrNull()
+                        if (lastMessage != null && !lastMessage.isFromUser && lastMessage.text.startsWith("Thinking")) {
+                            conv.copy(messages = conv.messages.dropLast(1) + Message("Thinking... ($seconds s)", isFromUser = false))
+                        } else {
+                            conv
+                        }
+                    } else conv
+                }
+            }
         }
 
         coroutineScope.launch {
@@ -337,10 +359,19 @@ fun AppLayout(
             } else {
                 "No model loaded. Please select or download a model in Settings."
             }
+            timerJob.cancel()
+            val duration = System.currentTimeMillis() - startTime
 
             conversations = conversations.map {
                 if (it.id == conversationId) {
-                    it.copy(messages = it.messages + Message(result, isFromUser = false))
+                    val currentMessages = it.messages
+                    val lastMessage = currentMessages.lastOrNull()
+                    val newMessages = if (lastMessage != null && !lastMessage.isFromUser && lastMessage.text.startsWith("Thinking")) {
+                        currentMessages.dropLast(1)
+                    } else {
+                        currentMessages
+                    }
+                    it.copy(messages = newMessages + Message(result, isFromUser = false, timeToGenerate = duration))
                 } else it
             }
         }
@@ -512,8 +543,20 @@ fun ChatScreen(
                             if (message.isFromUser) {
                                 Text(text = message.text)
                             } else {
-                                RichText(style = getCustomRichTextStyle(), modifier = Modifier.weight(1f)) {
-                                    Markdown(content = message.text)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    RichText(style = getCustomRichTextStyle()) {
+                                        Markdown(content = message.text)
+                                    }
+                                    message.timeToGenerate?.let {
+                                        val seconds = it / 1000
+                                        val tenths = (it % 1000) / 100
+                                        Text(
+                                            text = "After $seconds.$tenths seconds of thinking...",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(top = 4.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
