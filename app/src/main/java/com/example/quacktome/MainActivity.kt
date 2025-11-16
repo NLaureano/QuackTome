@@ -1,9 +1,12 @@
 package com.example.quacktome
 
+import android.content.Context
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,14 +16,23 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,21 +40,61 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.quacktome.ui.theme.QuackTomeTheme
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.IOException
 
 // --- Data Classes ---
 data class Message(val text: String, val isFromUser: Boolean)
 data class Conversation(val id: Int, var name: String, val messages: List<Message>)
 
+class DataRepository(context: Context) {
+
+    private val prefs = context.getSharedPreferences("QuackTomePrefs", Context.MODE_PRIVATE)
+    private val gson = Gson()
+
+    // --- Theme Settings ---
+    fun saveThemePreference(isDarkTheme: Boolean) {
+        prefs.edit().putBoolean("dark_theme", isDarkTheme).apply()
+    }
+
+    fun loadThemePreference(): Boolean {
+        return prefs.getBoolean("dark_theme", false) // Default to false (light theme)
+    }
+
+    // --- Conversation History ---
+    fun saveConversations(conversations: List<Conversation>) {
+        val json = gson.toJson(conversations)
+        prefs.edit().putString("conversations_json", json).apply()
+    }
+
+    fun loadConversations(): List<Conversation> {
+        val json = prefs.getString("conversations_json", null)
+        return if (json != null) {
+            val type = object : TypeToken<List<Conversation>>() {}.type
+            gson.fromJson(json, type)
+        } else {
+            // Return a default conversation if nothing is saved
+            listOf(Conversation(id = 1, name = "Chat 1", messages = emptyList()))
+        }
+    }
+}
+
 class MainActivity : ComponentActivity() {
     private var llm: LlmInference? = null
+    private lateinit var dataRepository: DataRepository // <-- Add repository instance
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        dataRepository = DataRepository(applicationContext) // <-- Initialize repository
 
         val modelPath = "/data/local/tmp/llm/gemma3-1b-it-int4.task"
         val modelFile = File(modelPath)
@@ -56,26 +108,50 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            QuackTomeTheme {
-                AppLayout(llm)
+            var useDarkTheme by remember { mutableStateOf(dataRepository.loadThemePreference()) }
+            QuackTomeTheme(darkTheme = useDarkTheme) {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    AppLayout(
+                        llm = llm,
+                        useDarkTheme = useDarkTheme,
+                        onThemeChange = {
+                            useDarkTheme = it
+                            dataRepository.saveThemePreference(it) // <-- Save theme on change
+                        },
+                        dataRepository = dataRepository // <-- Pass repository to AppLayout
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-fun AppLayout(llm: LlmInference?) {
-    var sidebarExpanded by remember { mutableStateOf(true) }
+fun AppLayout(
+    llm: LlmInference?,
+    useDarkTheme: Boolean,
+    onThemeChange: (Boolean) -> Unit,
+    dataRepository: DataRepository // <-- Receive the repository
+) {
+    var sidebarExpanded by remember { mutableStateOf(false) }
+    var showAboutDialog by remember { mutableStateOf(false) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
 
-    var conversations by remember {
-        mutableStateOf(
-            listOf(Conversation(id = 1, name = "Chat 1", messages = emptyList()))
-        )
+    // Load conversations from the repository
+    var conversations by remember { mutableStateOf(dataRepository.loadConversations()) }
+
+    var activeConversationId by remember {
+        // Default to the first conversation's ID if available
+        mutableStateOf(conversations.firstOrNull()?.id)
     }
-    var activeConversationId by remember { mutableStateOf<Int?>(1) }
 
     val activeConversation = conversations.find { it.id == activeConversationId }
     val coroutineScope = rememberCoroutineScope()
+
+    // --- Save conversations whenever they change ---
+    LaunchedEffect(conversations) {
+        dataRepository.saveConversations(conversations)
+    }
 
     fun createNewConversation() {
         val newId = (conversations.maxOfOrNull { it.id } ?: 0) + 1
@@ -118,20 +194,46 @@ fun AppLayout(llm: LlmInference?) {
         }
     }
 
-    Row(modifier = Modifier.fillMaxSize()) {
-        Sidebar(
-            conversations = conversations,
-            onSelectConversation = { activeConversationId = it.id },
-            onCreateNew = { createNewConversation() },
-            onDeleteConversation = { onDeleteConversation(it) },
-            expanded = sidebarExpanded,
-            onToggle = { sidebarExpanded = !sidebarExpanded }
-        )
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Chat content fills the screen
         ChatScreen(
             conversation = activeConversation,
             onSendMessage = { onSendMessage(it) },
             llm = llm,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // Sidebar slides over the chat screen
+        val sidebarWidth = 250.dp
+        val animatedOffsetX by animateDpAsState(targetValue = if (sidebarExpanded) 0.dp else -sidebarWidth, label = "")
+        Sidebar(
+            modifier = Modifier.offset(x = animatedOffsetX).width(sidebarWidth),
+            conversations = conversations,
+            onSelectConversation = { activeConversationId = it.id },
+            onCreateNew = { createNewConversation() },
+            onDeleteConversation = { onDeleteConversation(it) },
+            onShowAbout = { showAboutDialog = true },
+            onShowSettings = { showSettingsDialog = true }
+        )
+
+        // Toggle button always in top-left, on top of everything
+        Button(
+            onClick = { sidebarExpanded = !sidebarExpanded },
+            modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+        ) {
+            Text(if (sidebarExpanded) "<<" else ">>")
+        }
+    }
+
+    if (showAboutDialog) {
+        AboutDialog(onDismiss = { showAboutDialog = false })
+    }
+
+    if (showSettingsDialog) {
+        SettingsDialog(
+            onDismiss = { showSettingsDialog = false },
+            isDarkTheme = useDarkTheme,
+            onThemeChange = onThemeChange
         )
     }
 }
@@ -142,62 +244,67 @@ fun Sidebar(
     onSelectConversation: (Conversation) -> Unit,
     onCreateNew: () -> Unit,
     onDeleteConversation: (Conversation) -> Unit,
-    expanded: Boolean,
-    onToggle: () -> Unit
+    onShowAbout: () -> Unit,
+    onShowSettings: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val width by animateDpAsState(targetValue = if (expanded) 250.dp else 60.dp, label = "")
-
-    Column(
-        modifier = Modifier
-            .width(width)
-            .fillMaxHeight()
-            .padding(8.dp)
+    Surface(
+        modifier = modifier.fillMaxHeight(),
+        color = MaterialTheme.colorScheme.surface
     ) {
-        // --- Toggle Button ---
-        Button(onClick = onToggle) {
-            Text(if (expanded) "<<" else ">>")
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        // --- New Chat Button ---
-        Button(onClick = onCreateNew, modifier = Modifier.fillMaxWidth()) {
-            Text(if (expanded) "New Chat" else "+")
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        // --- List of chats ---
-        LazyColumn(
-            modifier = Modifier.weight(1f)
+        Column(
+            modifier = Modifier.padding(8.dp)
         ) {
-            items(conversations, key = { it.id }) { chat ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSelectConversation(chat) }
-                        .padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = if (expanded) chat.name else "•",
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (expanded) {
+            // Spacer to avoid being covered by the toggle button
+            Spacer(Modifier.height(56.dp))
+
+            // --- New Chat Button ---
+            Button(onClick = onCreateNew, modifier = Modifier.fillMaxWidth()) {
+                Text("New Chat")
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // --- List of chats ---
+            LazyColumn(
+                modifier = Modifier.weight(1f)
+            ) {
+                items(conversations, key = { it.id }) { chat ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectConversation(chat) }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = chat.name,
+                            modifier = Modifier.weight(1f)
+                        )
                         Button(onClick = { onDeleteConversation(chat) }) {
                             Text("X")
                         }
                     }
                 }
             }
-        }
 
-        // --- About button pinned at bottom ---
-        Button(
-            onClick = { /* Show About page */ },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(if (expanded) "About" else "A")
+            // --- Settings button ---
+            Button(
+                onClick = onShowSettings,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Settings")
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // --- About button pinned at bottom ---
+            Button(
+                onClick = onShowAbout,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("About")
+            }
         }
     }
 }
@@ -212,20 +319,59 @@ fun ChatScreen(
     val inputText = remember { mutableStateOf("") }
 
     Column(modifier = modifier.fillMaxSize()) {
-        if (conversation == null) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Select or create a conversation.")
-            }
-            return
+        // --- Top Bar ---
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "Runic Tome",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onBackground
+            )
         }
 
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .padding(8.dp)
-        ) {
-            items(conversation.messages) { message ->
-                Text(text = message.text, modifier = Modifier.padding(4.dp))
+        Box(modifier = Modifier.weight(1f)) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(8.dp)
+            ) {
+                if (conversation != null) {
+                    items(conversation.messages) { message ->
+                        Text(text = message.text, modifier = Modifier.padding(4.dp))
+                    }
+                }
+            }
+
+            if (conversation == null || conversation.messages.isEmpty()) {
+                val context = LocalContext.current
+                val imageBitmap = remember(context) { // Remember the loaded bitmap
+                    try {
+                        val inputStream = context.assets.open("RUNICLogoGlowTransparent.png")
+                        BitmapFactory.decodeStream(inputStream)?.asImageBitmap()
+                    } catch (e: IOException) {
+                        null // Return null if loading fails
+                    }
+                }
+
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (imageBitmap != null) {
+                        Image(
+                            bitmap = imageBitmap,
+                            contentDescription = "Logo",
+                            modifier = Modifier.fillMaxSize(0.5f),
+                            alpha = 0.5f
+                        )
+                    } else {
+                        Text("Select or create a conversation.")
+                    }
+                }
             }
         }
 
@@ -248,7 +394,7 @@ fun ChatScreen(
                         inputText.value = ""
                     }
                 },
-                enabled = llm != null,
+                enabled = llm != null && conversation != null,
                 modifier = Modifier.padding(start = 8.dp)
             ) {
                 Text("Send")
@@ -257,10 +403,49 @@ fun ChatScreen(
     }
 }
 
+@Composable
+fun AboutDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("About QuackTome") },
+        text = { Text("This is a simple chat application that uses a local AI model to generate responses. More information will be added here soon.") },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+@Composable
+fun SettingsDialog(onDismiss: () -> Unit, isDarkTheme: Boolean, onThemeChange: (Boolean) -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Settings") },
+        text = {
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Dark Theme", modifier = Modifier.weight(1f))
+                    Switch(checked = isDarkTheme, onCheckedChange = onThemeChange)
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+
 @Preview(showBackground = true)
 @Composable
 fun DefaultPreview() {
     QuackTomeTheme {
-        AppLayout(llm = null)
+        AppLayout(llm = null, useDarkTheme = false, onThemeChange = {}, dataRepository = DataRepository(LocalContext.current))
     }
 }
