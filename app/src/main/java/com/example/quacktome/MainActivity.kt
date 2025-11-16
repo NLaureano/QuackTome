@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -40,15 +42,29 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.quacktome.ui.theme.QuackTomeTheme
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import com.halilibo.richtext.markdown.Markdown
+import com.halilibo.richtext.ui.BlockQuoteGutter
+import com.halilibo.richtext.ui.CodeBlockStyle
+import com.halilibo.richtext.ui.RichTextStyle
+import com.halilibo.richtext.ui.TableStyle
+import com.halilibo.richtext.ui.material3.RichText
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 
@@ -173,22 +189,27 @@ fun AppLayout(
         // Add user message by creating a new list of conversations
         conversations = conversations.map {
             if (it.id == conversationId) {
-                it.copy(messages = it.messages + Message("You: $text", isFromUser = true))
+                it.copy(messages = it.messages + Message(text, isFromUser = true))
             } else {
                 it
             }
         }
 
         coroutineScope.launch {
-            llm?.let { llmInference ->
-                val result = llmInference.generateResponse(text)
-                // Add AI message by creating a new list of conversations
-                conversations = conversations.map {
-                    if (it.id == conversationId) {
-                        it.copy(messages = it.messages + Message("AI: $result", isFromUser = false))
-                    } else {
-                        it
-                    }
+            val result = if (llm != null) {
+                withContext(Dispatchers.IO) {
+                    llm.generateResponse(text)
+                }
+            } else {
+                // Add filler AI message for emulator
+                "This is a **filler** response for testing.\n\n> A block quote!\n\n```kotlin\nfun main() {\n  println(\"Hello, Markdown!\")\n}\n```\n\n| Feature    | Supported |\n|------------|-----------|\n| Tables     | Yes       |\n| Code Blocks| Yes       |\n| Blockquotes| Yes       |"
+            }
+
+            conversations = conversations.map {
+                if (it.id == conversationId) {
+                    it.copy(messages = it.messages + Message(result, isFromUser = false))
+                } else {
+                    it
                 }
             }
         }
@@ -310,6 +331,32 @@ fun Sidebar(
 }
 
 @Composable
+fun getCustomRichTextStyle(): RichTextStyle {
+    val colors = MaterialTheme.colorScheme
+    return RichTextStyle(
+        codeBlockStyle = CodeBlockStyle(
+            textStyle = TextStyle(
+                fontFamily = FontFamily.Monospace,
+                color = colors.onSurfaceVariant
+            ),
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(colors.surfaceVariant)
+                .padding(16.dp)
+        ),
+        blockQuoteGutter = BlockQuoteGutter.BarGutter(
+            barWidth = 4.sp,
+            color = { colors.primary }
+        ),
+        tableStyle = TableStyle(
+            borderColor = colors.onSurface.copy(alpha = 0.5f),
+            headerTextStyle = TextStyle(fontWeight = FontWeight.Bold),
+            cellPadding = 8.sp
+        )
+    )
+}
+
+@Composable
 fun ChatScreen(
     conversation: Conversation?,
     onSendMessage: (String) -> Unit,
@@ -334,18 +381,6 @@ fun ChatScreen(
         }
 
         Box(modifier = Modifier.weight(1f)) {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(8.dp)
-            ) {
-                if (conversation != null) {
-                    items(conversation.messages) { message ->
-                        Text(text = message.text, modifier = Modifier.padding(4.dp))
-                    }
-                }
-            }
-
             if (conversation == null || conversation.messages.isEmpty()) {
                 val context = LocalContext.current
                 val imageBitmap = remember(context) { // Remember the loaded bitmap
@@ -361,15 +396,42 @@ fun ChatScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (imageBitmap != null) {
-                        Image(
-                            bitmap = imageBitmap,
-                            contentDescription = "Logo",
-                            modifier = Modifier.fillMaxSize(0.5f),
-                            alpha = 0.5f
-                        )
-                    } else {
-                        Text("Select or create a conversation.")
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        if (imageBitmap != null) {
+                            Image(
+                                bitmap = imageBitmap,
+                                contentDescription = "Logo",
+                                modifier = Modifier.fillMaxSize(0.5f),
+                                alpha = 0.5f
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("Select or create a conversation to get started.")
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(8.dp)
+                ) {
+                    items(conversation.messages) { message ->
+                        Row(
+                            modifier = Modifier.padding(vertical = 4.dp).fillMaxWidth(),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Text(text = if (message.isFromUser) "You: " else "AI: ")
+                            if (message.isFromUser) {
+                                Text(text = message.text)
+                            } else {
+                                RichText(
+                                    style = getCustomRichTextStyle(),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Markdown(content = message.text)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -394,7 +456,7 @@ fun ChatScreen(
                         inputText.value = ""
                     }
                 },
-                enabled = llm != null && conversation != null,
+                enabled = conversation != null,
                 modifier = Modifier.padding(start = 8.dp)
             ) {
                 Text("Send")

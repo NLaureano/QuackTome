@@ -59,4 +59,6 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     implementation("com.google.mediapipe:tasks-genai:0.10.29")
     implementation("com.google.code.gson:gson:2.10.1")
+    implementation("com.halilibo.compose-richtext:richtext-commonmark:0.20.0")
+    implementation("com.halilibo.compose-richtext:richtext-ui-material3:0.20.0")
 }
